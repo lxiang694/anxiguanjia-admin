@@ -17,7 +17,7 @@
  * ============================================================================
  */
 
-import { PrismaClient, type Prisma } from '@prisma/client';
+import { PrismaClient, type Prisma, type TrainingCourse } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
@@ -250,7 +250,7 @@ async function main() {
       passingScore: 85,
     },
   ];
-  const courses = [];
+  const courses: TrainingCourse[] = [];
   for (const c of courseData) {
     courses.push(await prisma.trainingCourse.create({ data: c }));
   }

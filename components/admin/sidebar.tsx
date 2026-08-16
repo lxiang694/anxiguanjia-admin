@@ -33,8 +33,10 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   Settings,
 };
 
-export type SidebarGroup = NavGroup & {
-  items: (NavGroup['items'][number] & { badge?: number })[];
+export type SidebarNavItem = NavGroup['items'][number] & { badge?: number };
+
+export type SidebarGroup = Omit<NavGroup, 'items'> & {
+  items: SidebarNavItem[];
 };
 
 export function Sidebar({ groups }: { groups: SidebarGroup[] }) {
