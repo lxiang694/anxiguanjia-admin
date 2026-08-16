@@ -1,0 +1,1563 @@
+// ============================================================================
+// 家庭安心管家 — 数据模型 V1
+//
+// 设计原则：
+//  1. 核心不是「老人」，而是 Household（家庭）—— 一个家庭是一个服务单位。
+//  2. 付款权 ≠ 数据查看权。所有对长辈数据的访问都要经过 Consent 授权模型。
+//  3. Elder 不是电子病历。生活情况为主，敏感健康信息单独隔离并受权限控制。
+//  4. 原始服务记录（VisitRecord）与家庭可见报告（AssuranceReport）严格分离。
+//  5. 一套后端 + 一套数据库 + 三个角色入口，不维护三份互相复制的客户数据。
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================================================
+// 枚举
+// ============================================================================
+
+/// 系统角色。注意：一线成员统一称「家庭安心专员」，界面不得出现阿姨／护工／陪护等称呼。
+enum Role {
+  SUPER_ADMIN /// 超级管理员
+  OPERATIONS /// 运营
+  SERVICE_SUPERVISOR /// 服务督导
+  AREA_MANAGER /// 区域服务主管
+  CUSTOMER_SERVICE /// 客服
+  FINANCE /// 财务
+  HR /// 人事
+  CITY_LEAD /// 城市负责人
+  FAMILY_CONSULTANT /// 家庭安心顾问
+  SENIOR_CARE_SPECIALIST /// 资深家庭安心专员
+  CARE_SPECIALIST /// 家庭安心专员
+  FAMILY_MEMBER /// 家庭成员（付费子女／获授权成员）
+}
+
+enum UserStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+  DISABLED
+}
+
+/// 家庭生命周期。与 CRM 漏斗筛选一致。
+enum HouseholdStatus {
+  LEAD /// 潜在
+  PENDING_ASSESSMENT /// 待评估
+  TRIAL /// 体验中
+  ACTIVE_MEMBER /// 正式会员
+  RENEWAL_DUE /// 待续费
+  PAUSED /// 暂停
+  TERMINATED /// 终止
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  UNDISCLOSED
+}
+
+/// 居住情况（生活事实，不是医疗判断）
+enum LivingStatus {
+  ALONE /// 独居
+  WITH_SPOUSE /// 与配偶同住
+  WITH_CHILDREN /// 与子女同住
+  WITH_CAREGIVER /// 与家政/照护者同住
+  OTHER
+}
+
+/// 行动情况（观察性描述，非诊断）
+enum MobilityStatus {
+  INDEPENDENT /// 行动自如
+  SLOW_BUT_INDEPENDENT /// 较慢但可自理
+  NEEDS_AID /// 需辅具
+  NEEDS_ASSISTANCE /// 需他人协助
+  MOSTLY_BEDBOUND /// 多在床上
+  UNKNOWN
+}
+
+enum RelationshipType {
+  SON
+  DAUGHTER
+  SPOUSE
+  DAUGHTER_IN_LAW
+  SON_IN_LAW
+  GRANDCHILD
+  SIBLING
+  RELATIVE
+  FRIEND
+  OTHER
+}
+
+/// 授权可覆盖的数据类型。粒度刻意保持业务可理解，而非技术字段级。
+enum PermissionType {
+  ASSURANCE_REPORT /// 安心报告
+  LIFE_RECORD /// 生活记录（服务记录中的生活观察）
+  PHOTO /// 服务照片
+  INCIDENT_ALERT /// 异常通知
+  SENSITIVE_HEALTH /// 健康敏感信息（慢性病、用药、健康数值）
+  SERVICE_SCHEDULE /// 服务安排
+  CONTACT_INFO /// 联络方式
+}
+
+enum ConsentStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+/// 授权依据 —— 用于满足个人信息保护的「取得方式可追溯」要求
+enum ConsentBasis {
+  ELDER_SELF_SIGNED /// 长辈本人签署
+  ELDER_VERBAL_WITNESSED /// 长辈口头同意（有见证并记录）
+  LEGAL_GUARDIAN /// 法定监护人代为同意
+  SERVICE_NECESSITY /// 服务履行必要（最小范围）
+}
+
+enum StaffLevel {
+  TRAINEE /// 实习
+  JUNIOR /// 初级
+  INTERMEDIATE /// 中级
+  SENIOR /// 资深
+  SUPERVISOR /// 督导
+}
+
+enum EmploymentStatus {
+  CANDIDATE /// 候选人
+  ONBOARDED /// 已入职
+  RESIGNED /// 离职
+}
+
+/// 上岗状态机：候选人→已入职→培训中→待考核→已通过→可排班→暂停服务→离职
+enum ServiceStatus {
+  NOT_STARTED /// 未开始（尚未进入培训）
+  IN_TRAINING /// 培训中
+  PENDING_ASSESSMENT /// 待考核
+  PASSED /// 已通过（尚未开放排班）
+  ACTIVE /// 可排班（唯一可被派单的状态）
+  SUSPENDED /// 暂停服务
+  OFFBOARDED /// 已离职
+}
+
+enum VerificationStatus {
+  UNVERIFIED /// 未核验 —— 前端不得标示「已认证」
+  PENDING /// 核验中
+  VERIFIED /// 已核验
+  REJECTED /// 核验未通过
+}
+
+enum EducationLevel {
+  SECONDARY_VOCATIONAL /// 中专
+  JUNIOR_COLLEGE /// 大专
+  BACHELOR /// 本科
+  MASTER /// 硕士
+  OTHER
+}
+
+enum TrainingType {
+  ONBOARDING /// 入职培训
+  SERVICE_PHILOSOPHY /// 服务理念
+  ELDER_COMMUNICATION /// 长者沟通
+  SERVICE_PROCESS /// 服务流程
+  SAFETY /// 安全
+  PRIVACY /// 隐私保护
+  INCIDENT_HANDLING /// 异常事件处理
+  PRACTICAL_ASSESSMENT /// 实操考核
+  OTHER
+}
+
+enum TrainingStatus {
+  NOT_STARTED /// 未开始
+  IN_PROGRESS /// 培训中
+  PENDING_EXAM /// 待考核
+  PASSED /// 通过
+  FAILED /// 未通过
+  NEEDS_RETRAIN /// 需复训
+}
+
+enum ServiceType {
+  HOME_VISIT /// 上门安心探访
+  PHONE_CARE /// 电话关怀
+  MEDICAL_ESCORT /// 陪诊协助
+  DAILY_ASSISTANCE /// 生活协助 / 生活代办
+  ASSESSMENT /// 家庭安心评估
+  EXTRA_VISIT /// 额外探访
+}
+
+enum PlanTier {
+  CARE /// 关怀版
+  ASSURANCE /// 安心版
+  STEWARD /// 管家版
+}
+
+/// 任务状态机（含异常分支）
+enum TaskStatus {
+  PENDING_ASSIGN /// 待派单
+  ASSIGNED /// 已派单
+  ACCEPTED /// 已接受
+  READY_TO_DEPART /// 待出发
+  ARRIVED /// 已到达
+  IN_SERVICE /// 服务中
+  PENDING_RECORD /// 待提交记录
+  PENDING_REVIEW /// 待审核
+  COMPLETED /// 已完成
+  CANCELLED /// 取消
+  RESCHEDULED /// 改期
+  DECLINED /// 拒绝
+  NOT_COMPLETED /// 服务未完成
+}
+
+/// 服务记录中的观察项 —— 一律使用「观察到的事实」措辞，不做医疗判断
+enum ObservationLevel {
+  NORMAL /// 正常
+  FAIR /// 一般
+  SELF_REPORTED_ISSUE /// 本人反映有变化
+  REDUCED /// 减少 / 较疲倦
+  UNKNOWN /// 不清楚
+  OTHER /// 其他
+}
+
+/// 健康数值来源 —— 每条数据都必须记录来源，系统不显示疾病诊断
+enum ReadingSource {
+  ELDER_SELF_MEASURED /// 本人自行测量
+  FAMILY_PROVIDED /// 家庭成员提供
+  SPECIALIST_ASSISTED /// 安心专员协助记录
+  MEDICAL_DOCUMENT /// 医疗资料提供
+}
+
+enum ReadingType {
+  BLOOD_PRESSURE
+  BLOOD_GLUCOSE
+  WEIGHT
+  TEMPERATURE
+  HEART_RATE
+}
+
+enum IncidentType {
+  CANNOT_REACH_ELDER /// 无法联系长辈
+  ELDER_FEELS_UNWELL /// 长辈表示身体不适
+  FALL /// 跌倒
+  ENVIRONMENT_SAFETY /// 生活环境安全问题
+  SERVICE_CONFLICT /// 服务冲突
+  FAMILY_DISPUTE /// 家庭纠纷
+  OTHER
+}
+
+enum IncidentSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IncidentStatus {
+  NEW /// 新事件
+  ACKNOWLEDGED /// 已接单
+  IN_PROGRESS /// 处理中
+  PENDING_FOLLOW_UP /// 待跟进
+  CLOSED /// 已关闭
+}
+
+enum ReportStatus {
+  DRAFT /// 草稿（尚未人工确认）
+  PENDING_REVIEW /// 待审核
+  APPROVED /// 已确认（尚未发布）
+  PUBLISHED /// 已发布（家庭端可见）
+  REJECTED /// 退回重写
+}
+
+/// 报告生成方式 —— 若使用 AI 必须标明，且 AI 不得虚构原始记录中不存在的内容
+enum ReportGeneration {
+  RULE_BASED_DRAFT /// 系统基于原始记录汇总生成草稿
+  AI_ASSISTED /// AI 辅助整理（需人工确认）
+  HUMAN_WRITTEN /// 人工撰写
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  PAUSED
+  CANCELLED
+  EXPIRED
+}
+
+enum OrderType {
+  NEW_SUBSCRIPTION /// 新订阅
+  RENEWAL /// 续费
+  ADD_ON /// 增值服务
+  REFUND /// 退款
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  REFUNDED
+  CANCELLED
+}
+
+/// 开票状态。第一版是人工登记流程，不对接税控系统。
+enum InvoiceStatus {
+  NOT_REQUESTED /// 未申请
+  REQUESTED /// 已申请
+  ISSUED /// 已开票
+  VOIDED /// 已作废
+}
+
+enum InvoiceType {
+  PERSONAL_ELECTRONIC /// 个人电子发票
+  COMPANY_ELECTRONIC /// 单位电子发票
+  COMPANY_SPECIAL /// 单位专用发票
+}
+
+/// 通知模板适用的触发场景
+enum NotificationTemplateEvent {
+  SERVICE_COMPLETED /// 服务完成
+  REPORT_PUBLISHED /// 安心报告生成
+  NEXT_SERVICE_REMINDER /// 下一次服务提醒
+  SPECIALIST_CHANGED /// 专员调整
+  SCHEDULE_CHANGED /// 服务时间更改
+  MEMBERSHIP_EXPIRING /// 会员即将到期
+  INCIDENT_URGENT /// 需要家庭立即确认的现场事件
+  CANNOT_REACH_ELDER /// 无法联系长辈
+}
+
+enum NotificationLevel {
+  NORMAL /// 普通
+  IMPORTANT /// 重要
+  URGENT /// 紧急
+}
+
+enum NotificationChannel {
+  IN_APP /// 站内通知（第一版唯一实现）
+  SMS /// 短信（预留）
+  WECHAT /// 微信（预留）
+  WECOM /// 企业微信（预留）
+}
+
+enum FeedbackCategory {
+  SERVICE_ATTITUDE /// 服务态度
+  TIMING /// 时间问题
+  SERVICE_CONTENT /// 服务内容
+  SAFETY /// 安全问题
+  PAYMENT /// 付款
+  CONSULTATION /// 咨询
+  OTHER
+}
+
+enum FeedbackStatus {
+  NEW /// 新建
+  IN_PROGRESS /// 处理中
+  AWAITING_FAMILY /// 等待家庭确认
+  RESOLVED /// 已解决
+  CLOSED /// 已关闭
+}
+
+enum ChangeRequestType {
+  RESCHEDULE /// 申请改期
+  CANCEL /// 取消申请
+  EXTRA_SERVICE /// 申请额外服务
+}
+
+enum ChangeRequestStatus {
+  SUBMITTED
+  APPROVED
+  DECLINED
+  CANCELLED
+}
+
+// ============================================================================
+// 组织 / 地域
+// ============================================================================
+
+model City {
+  id        String     @id @default(cuid())
+  name      String     @unique /// 例：长沙
+  province  String
+  isActive  Boolean    @default(true)
+  createdAt DateTime   @default(now())
+
+  districts  District[]
+  households Household[]
+
+  @@map("cities")
+}
+
+model District {
+  id     String @id @default(cuid())
+  cityId String
+  name   String /// 例：岳麓区
+
+  city         City           @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  households   Household[]
+  staffProfile StaffProfile[]
+
+  @@unique([cityId, name])
+  @@map("districts")
+}
+
+// ============================================================================
+// 用户与认证
+// ============================================================================
+
+model User {
+  id           String     @id @default(cuid())
+  name         String
+  phone        String     @unique
+  email        String?    @unique
+  avatarUrl    String?
+  passwordHash String
+  role         Role
+  status       UserStatus @default(ACTIVE)
+
+  /// 城市数据范围：城市负责人 / 区域主管只能看到自己城市的数据
+  cityId String?
+
+  /// 管理员二次验证预留（第一版仅保留接口，不强制启用）
+  twoFactorEnabled Boolean @default(false)
+  twoFactorSecret  String?
+
+  lastLoginAt DateTime?
+  isDemo      Boolean   @default(false) /// 示例数据标记
+  deletedAt   DateTime? /// 软删除
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  staffProfile   StaffProfile?
+  familyMembers  FamilyMember[]
+  consentsGiven  Consent[]      @relation("ConsentGrantor")
+  consentsHeld   Consent[]      @relation("ConsentGrantee")
+  auditLogs      AuditLog[]
+  notifications  Notification[]
+  sessions       Session[]
+  incidentEvents IncidentEvent[]
+
+  consultantHouseholds Household[]      @relation("HouseholdConsultant")
+  reviewedReports      AssuranceReport[] @relation("ReportReviewer")
+  handledIncidents     Incident[]       @relation("IncidentOwner")
+  reportedIncidents    Incident[]       @relation("IncidentReporter")
+  assignedFeedback     FeedbackCase[]   @relation("FeedbackAssignee")
+  submittedFeedback    FeedbackCase[]   @relation("FeedbackSubmitter")
+  changeRequests       ServiceChangeRequest[]
+  verifiedEducations   EducationRecord[] @relation("EducationVerifier")
+
+  @@index([role, status])
+  @@index([cityId])
+  @@map("users")
+}
+
+model Session {
+  id         String   @id @default(cuid())
+  userId     String
+  tokenHash  String   @unique /// 只存哈希，不存原始 token
+  userAgent  String?
+  ipAddress  String?
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@map("sessions")
+}
+
+// ============================================================================
+// 家庭（系统核心单位）
+// ============================================================================
+
+model Household {
+  id            String          @id @default(cuid())
+  householdCode String          @unique /// 例：CS-000018
+  name          String /// 例：王家
+  cityId        String
+  districtId    String?
+  addressLine   String? /// 服务地址（属敏感信息，界面按需脱敏）
+  status        HouseholdStatus @default(LEAD)
+
+  /// 关键关系：主要联络人、家庭安心顾问、固定专员、备用专员
+  primaryContactId     String? @unique
+  consultantId         String?
+  primarySpecialistId  String?
+  backupSpecialistId   String?
+
+  /// 家庭级注意事项（会展示给上门专员，务必只写服务必要信息）
+  serviceNotes String?
+  /// 内部备注（仅运营可见，不对家庭端与专员端开放）
+  internalNotes String?
+
+  joinedAt  DateTime?
+  isDemo    Boolean   @default(false)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  city               City          @relation(fields: [cityId], references: [id])
+  district           District?     @relation(fields: [districtId], references: [id])
+  primaryContact     FamilyMember? @relation("HouseholdPrimaryContact", fields: [primaryContactId], references: [id])
+  consultant         User?         @relation("HouseholdConsultant", fields: [consultantId], references: [id])
+  primarySpecialist  StaffProfile? @relation("PrimarySpecialist", fields: [primarySpecialistId], references: [id])
+  backupSpecialist   StaffProfile? @relation("BackupSpecialist", fields: [backupSpecialistId], references: [id])
+
+  elders             Elder[]
+  members            FamilyMember[] @relation("HouseholdMembers")
+  servicePlan        HouseholdServicePlan?
+  tasks              ServiceTask[]
+  reports            AssuranceReport[]
+  incidents          Incident[]
+  subscriptions      Subscription[]
+  orders             Order[]
+  timeline           TimelineEvent[]
+  feedbackCases      FeedbackCase[]
+  specialistChanges  SpecialistChangeLog[]
+  assessments        HouseholdAssessment[]
+
+  @@index([status, cityId])
+  @@index([primarySpecialistId])
+  @@index([consultantId])
+  @@map("households")
+}
+
+/// 长辈安心档案 —— 刻意不做成电子病历。以生活情况为主。
+model Elder {
+  id          String  @id @default(cuid())
+  householdId String
+  name        String
+  gender      Gender  @default(UNDISCLOSED)
+  birthday    DateTime?
+  phone       String?
+  address     String?
+
+  livingStatus   LivingStatus?
+  mobilityStatus MobilityStatus @default(UNKNOWN)
+
+  // ---- 生活情况（普通服务必要信息，专员可见）----
+  dailyRoutine        String? /// 日常习惯
+  activityNotes       String? /// 活动情况
+  dietNotes           String? /// 饮食习惯
+  sleepNotes          String? /// 睡眠情况
+  communicationPrefs  String? /// 沟通偏好
+  livingArrangement   String? /// 居住情况
+  familyRelations     String? /// 家庭关系
+  dailyNeeds          String? /// 生活需要
+  attentionNotes      String? /// 需要注意事项（服务必要）
+  emergencyArrangement String? /// 紧急联络安排
+
+  generalNotes String?
+
+  isDemo    Boolean   @default(false)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  household     Household         @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  sensitive     ElderSensitiveInfo?
+  familyMembers FamilyMember[]
+  consents      Consent[]
+  tasks         ServiceTask[]
+  visitRecords  VisitRecord[]
+  readings      HealthReading[]
+  reports       AssuranceReport[]
+  incidents     Incident[]
+  assessments   HouseholdAssessment[]
+
+  @@index([householdId])
+  @@map("elders")
+}
+
+/// 健康敏感信息单独成表，便于做「表级 + 授权级」双重隔离。
+/// 普通安心专员默认看不到本表内容。
+model ElderSensitiveInfo {
+  id      String @id @default(cuid())
+  elderId String @unique
+
+  chronicConditions String? /// 慢性情况（由家庭或医疗资料提供，非本系统诊断）
+  medications       String? /// 用药情况
+  allergies         String?
+  medicalDocsNotes  String?
+
+  /// 家庭设定的提醒范围（用于「超出家庭设定的提醒范围」提示，不是医疗诊断）
+  bpSystolicMax  Int?
+  bpDiastolicMax Int?
+  glucoseMax     Float?
+
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  elder Elder @relation(fields: [elderId], references: [id], onDelete: Cascade)
+
+  @@map("elder_sensitive_info")
+}
+
+model FamilyMember {
+  id          String  @id @default(cuid())
+  userId      String
+  householdId String
+  /// 可选：该成员主要对应哪位长辈（为空表示对应整个家庭）
+  elderId     String?
+
+  relationship      RelationshipType
+  isPayer           Boolean @default(false)
+  isPrimaryContact  Boolean @default(false)
+  isEmergencyContact Boolean @default(false)
+
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  household Household @relation("HouseholdMembers", fields: [householdId], references: [id], onDelete: Cascade)
+  elder     Elder?    @relation(fields: [elderId], references: [id])
+
+  primaryContactOf Household? @relation("HouseholdPrimaryContact")
+
+  @@unique([userId, householdId])
+  @@index([householdId])
+  @@map("family_members")
+}
+
+// ============================================================================
+// 授权模型 —— 付款权 ≠ 数据查看权
+// ============================================================================
+
+model Consent {
+  id      String @id @default(cuid())
+  elderId String
+
+  /// 授权人（通常是长辈本人，或法定监护人）
+  grantorId String
+  /// 被授权人（家庭成员）
+  granteeId String
+
+  permissionType PermissionType
+  /// 授权范围补充说明（例：仅限本人所在家庭的周报摘要）
+  scope String?
+
+  grantedAt DateTime  @default(now())
+  expiresAt DateTime?
+  revokedAt DateTime?
+  status    ConsentStatus @default(ACTIVE)
+
+  /// 授权版本与依据 —— 便于日后审计「当时是依据什么取得的」
+  version Int          @default(1)
+  basis   ConsentBasis @default(ELDER_SELF_SIGNED)
+  /// 授权凭证附件（私有存储 key，不是公开 URL）
+  evidenceKey String?
+
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  elder   Elder @relation(fields: [elderId], references: [id], onDelete: Cascade)
+  grantor User  @relation("ConsentGrantor", fields: [grantorId], references: [id])
+  grantee User  @relation("ConsentGrantee", fields: [granteeId], references: [id])
+
+  @@unique([elderId, granteeId, permissionType, version])
+  @@index([granteeId, status])
+  @@index([elderId, status])
+  @@map("consents")
+}
+
+// ============================================================================
+// 人员 / 专业背景 / 培训
+// ============================================================================
+
+model StaffProfile {
+  id     String @id @default(cuid())
+  userId String @unique
+
+  employeeCode String @unique /// 例：AX-0007
+  staffLevel   StaffLevel @default(JUNIOR)
+  cityId       String
+  districtId   String?
+
+  employmentStatus EmploymentStatus @default(CANDIDATE)
+  serviceStatus    ServiceStatus    @default(NOT_STARTED)
+
+  /// 对家庭端展示的简介（不得包含未核验的学历或资质表述）
+  bio String?
+  /// 入职日期
+  hiredAt DateTime?
+
+  isDemo    Boolean   @default(false)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  district District? @relation(fields: [districtId], references: [id])
+
+  educations    EducationRecord[]
+  trainings     TrainingRecord[]
+  competencies  StaffCompetency[]
+  availability  StaffAvailability[]
+  tasks         ServiceTask[]
+  visitRecords  VisitRecord[]
+  performance   StaffPerformanceSnapshot[]
+
+  primaryFor Household[] @relation("PrimarySpecialist")
+  backupFor  Household[] @relation("BackupSpecialist")
+
+  @@index([serviceStatus, cityId])
+  @@map("staff_profiles")
+}
+
+model EducationRecord {
+  id             String @id @default(cuid())
+  staffProfileId String
+
+  school         String
+  major          String
+  level          EducationLevel
+  graduationYear Int?
+
+  /// 未核验时前端不得标示「已认证」
+  verificationStatus VerificationStatus @default(UNVERIFIED)
+  verifiedById       String?
+  verifiedAt         DateTime?
+  /// 学历证明附件（私有存储 key）
+  evidenceKey String?
+
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  staffProfile StaffProfile @relation(fields: [staffProfileId], references: [id], onDelete: Cascade)
+  verifiedBy   User?        @relation("EducationVerifier", fields: [verifiedById], references: [id])
+
+  @@index([staffProfileId])
+  @@map("education_records")
+}
+
+model TrainingCourse {
+  id    String @id @default(cuid())
+  title String @unique
+  type  TrainingType
+
+  description String?
+  contentUrl  String?
+  /// 学时
+  creditHours Float   @default(0)
+  isMandatory Boolean @default(true)
+  /// 有效期（月）；为空表示长期有效
+  validMonths Int?
+  requiresExam Boolean @default(true)
+  passingScore Int?    @default(60)
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  records TrainingRecord[]
+
+  @@map("training_courses")
+}
+
+model TrainingRecord {
+  id             String @id @default(cuid())
+  staffProfileId String
+  courseId       String
+
+  status      TrainingStatus @default(NOT_STARTED)
+  startedAt   DateTime?
+  completedAt DateTime?
+  creditHours Float?
+  examScore   Int?
+  /// 培训负责人（记录姓名即可，不强制建立外键）
+  instructorName String?
+  remark         String?
+  /// 附件（私有存储 key）
+  attachmentKey String?
+  /// 到期时间（依 course.validMonths 计算）
+  expiresAt DateTime?
+
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  staffProfile StaffProfile   @relation(fields: [staffProfileId], references: [id], onDelete: Cascade)
+  course       TrainingCourse @relation(fields: [courseId], references: [id])
+
+  @@unique([staffProfileId, courseId])
+  @@index([status])
+  @@map("training_records")
+}
+
+/// 能力标签字典。requires_credential 用于区分「公司培训」与「法定资格」。
+model Competency {
+  id   String @id @default(cuid())
+  name String @unique /// 例：长辈沟通、陪诊协助
+  code String @unique
+
+  description String?
+  /// 是否涉及法定资格 —— 公司自行培训不得等同于法定资格
+  requiresCredential Boolean @default(false)
+  /// 该能力对应哪些服务类型的派单前置条件
+  requiredForServices ServiceType[]
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  staffLinks StaffCompetency[]
+
+  @@map("competencies")
+}
+
+model StaffCompetency {
+  id             String @id @default(cuid())
+  staffProfileId String
+  competencyId   String
+
+  /// 公司内部认定该专员具备此能力
+  grantedAt DateTime @default(now())
+  /// 若该能力 requiresCredential=true，必须另外登记外部资格凭证并核验
+  credentialNo     String?
+  credentialStatus VerificationStatus @default(UNVERIFIED)
+  credentialExpiry DateTime?
+
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  staffProfile StaffProfile @relation(fields: [staffProfileId], references: [id], onDelete: Cascade)
+  competency   Competency   @relation(fields: [competencyId], references: [id], onDelete: Cascade)
+
+  @@unique([staffProfileId, competencyId])
+  @@map("staff_competencies")
+}
+
+/// 专员提交的休假 / 不可排班时间
+model StaffAvailability {
+  id             String   @id @default(cuid())
+  staffProfileId String
+  startAt        DateTime
+  endAt          DateTime
+  reason         String?
+  /// true = 不可排班
+  isBlocked      Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  staffProfile StaffProfile @relation(fields: [staffProfileId], references: [id], onDelete: Cascade)
+
+  @@index([staffProfileId, startAt])
+  @@map("staff_availability")
+}
+
+/// 绩效快照 —— 刻意不设「单量排行榜」，以服务质量为主
+model StaffPerformanceSnapshot {
+  id             String @id @default(cuid())
+  staffProfileId String
+  periodStart    DateTime
+  periodEnd      DateTime
+
+  onTimeRate          Float? /// 准时率
+  completionRate      Float? /// 服务完成率
+  recordTimelyRate    Float? /// 记录提交及时率
+  reportQualityScore  Float? /// 安心报告质量
+  familyRatingAvg     Float? /// 家庭评价
+  complaintCount      Int    @default(0)
+  incidentCooperation Float? /// 事件处理配合度
+  trainingCompletion  Float? /// 培训完成率
+  retainedHouseholds  Int    @default(0) /// 固定家庭续约数
+  taskCount           Int    @default(0)
+
+  createdAt DateTime @default(now())
+
+  staffProfile StaffProfile @relation(fields: [staffProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([staffProfileId, periodStart, periodEnd])
+  @@map("staff_performance_snapshots")
+}
+
+// ============================================================================
+// 服务方案 / 会员
+// ============================================================================
+
+/// 商业产品定义（后台可编辑），不是执行计划
+model ServicePlan {
+  id   String   @id @default(cuid())
+  code String   @unique
+  name String /// 例：安心版
+  tier PlanTier
+
+  description   String?
+  monthlyPrice  Int /// 单位：分
+  /// 权益配置（后台可编辑）
+  visitsPerMonth      Int @default(0)
+  phoneCarePerMonth   Int @default(0)
+  reportsPerMonth     Int @default(0)
+  includedServices    ServiceType[]
+
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  householdPlans HouseholdServicePlan[]
+  subscriptions  Subscription[]
+
+  @@map("service_plans")
+}
+
+/// 家庭实际执行计划 —— 真正被排班引用的对象
+model HouseholdServicePlan {
+  id          String @id @default(cuid())
+  householdId String @unique
+  planId      String?
+
+  visitsPerWeek     Float @default(1)
+  phoneCarePerWeek  Float @default(2)
+  reportsPerWeek    Float @default(1)
+
+  /// 偏好时间（例：周四下午）；weekday 0=周日
+  preferredWeekday Int?
+  preferredWindow  String?
+
+  /// 注意事项（例：膝盖不舒服 / 不喜欢频繁更换陌生服务者）
+  executionNotes String?
+
+  startDate DateTime  @default(now())
+  endDate   DateTime?
+  isActive  Boolean   @default(true)
+
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household Household    @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  plan      ServicePlan? @relation(fields: [planId], references: [id])
+
+  @@map("household_service_plans")
+}
+
+/// 家庭安心评估（顾问在建立服务关系前完成）
+model HouseholdAssessment {
+  id          String @id @default(cuid())
+  householdId String
+  elderId     String?
+
+  assessorName String
+  assessedAt   DateTime @default(now())
+
+  livingSummary     String?
+  needsSummary      String?
+  riskNotes         String?
+  recommendedTier   PlanTier?
+  recommendation    String?
+
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  elder     Elder?    @relation(fields: [elderId], references: [id])
+
+  @@index([householdId])
+  @@map("household_assessments")
+}
+
+model Subscription {
+  id          String @id @default(cuid())
+  householdId String
+  planId      String
+
+  status      SubscriptionStatus @default(TRIAL)
+  startDate   DateTime           @default(now())
+  currentPeriodStart DateTime    @default(now())
+  currentPeriodEnd   DateTime
+  cancelledAt DateTime?
+  pausedAt    DateTime?
+
+  monthlyPrice Int /// 成交价（分），可能与 plan 标价不同
+  autoRenew    Boolean @default(true)
+
+  /// 本周期已用权益（用于「包含 4 次探访」类计数）
+  usedVisits    Int @default(0)
+  usedPhoneCare Int @default(0)
+  usedReports   Int @default(0)
+
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household Household   @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  plan      ServicePlan @relation(fields: [planId], references: [id])
+  orders    Order[]
+
+  @@index([status, currentPeriodEnd])
+  @@index([householdId])
+  @@map("subscriptions")
+}
+
+model Order {
+  id          String @id @default(cuid())
+  orderNo     String @unique /// 例：ORD-20260815-0007
+  householdId String
+  subscriptionId String?
+
+  type   OrderType
+  status OrderStatus @default(PENDING)
+  /// 金额（分）。退款为负数。
+  amount Int
+  currency String @default("CNY")
+
+  description String?
+  paidAt      DateTime?
+  refundedAt  DateTime?
+  refundReason String?
+
+  /// 开票登记（第一版为人工登记，不接税控系统）
+  invoiceStatus InvoiceStatus @default(NOT_REQUESTED)
+  invoiceNo     String?
+  invoiceType   InvoiceType?
+  invoiceTitle  String? /// 开票名称（个人或单位）
+  invoiceTaxNo  String? /// 单位税号
+  invoicedAt    DateTime?
+  invoiceNote   String?
+
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household    Household     @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id])
+
+  @@index([householdId, status])
+  @@index([createdAt])
+  @@map("orders")
+}
+
+// ============================================================================
+// 排班 / 派单 / 服务执行
+// ============================================================================
+
+model ServiceTask {
+  id      String @id @default(cuid())
+  taskNo  String @unique /// 例：TSK-20260815-0031
+
+  householdId String
+  elderId     String?
+  staffProfileId String?
+
+  serviceType ServiceType
+  status      TaskStatus  @default(PENDING_ASSIGN)
+
+  scheduledStart DateTime
+  /// 预计时长（分钟）
+  estimatedMinutes Int @default(60)
+  addressLine      String?
+
+  /// 任务内容（本次要完成的事项）
+  taskItems String?
+  /// 家庭注意事项快照（避免日后档案变更导致历史任务语义漂移）
+  attentionSnapshot String?
+
+  /// 是否由备用专员执行 + 更换原因（固定专员制度要求留痕）
+  isBackupAssignment Boolean @default(false)
+  reassignReason     String?
+
+  acceptedAt DateTime?
+  arrivedAt  DateTime?
+  startedAt  DateTime?
+  endedAt    DateTime?
+  /// 一次性到达签到坐标 —— 明确不做 24 小时持续定位
+  checkinLat Float?
+  checkinLng Float?
+  checkinAccuracy Float?
+
+  cancelledAt   DateTime?
+  cancelReason  String?
+  declineReason String?
+  rescheduledToId String? @unique
+
+  isDemo    Boolean   @default(false)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  household    Household     @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  elder        Elder?        @relation(fields: [elderId], references: [id])
+  staffProfile StaffProfile? @relation(fields: [staffProfileId], references: [id])
+
+  reportSourceLink AssuranceVisitRecordLink?
+  record           VisitRecord?
+  incidents   Incident[]
+  changeRequests ServiceChangeRequest[]
+
+  @@index([staffProfileId, scheduledStart])
+  @@index([householdId, scheduledStart])
+  @@index([status, scheduledStart])
+  @@map("service_tasks")
+}
+
+/// 原始服务记录 —— 永久保留，不因报告修改而变动
+model VisitRecord {
+  id     String @id @default(cuid())
+  taskId String @unique
+  householdId String
+  elderId     String?
+  staffProfileId String
+
+  /// 卡片式勾选，避免要求专员填几十个字段
+  spiritLevel   ObservationLevel @default(UNKNOWN)
+  spiritNote    String?
+  dietLevel     ObservationLevel @default(UNKNOWN)
+  dietNote      String?
+  sleepLevel    ObservationLevel @default(UNKNOWN)
+  sleepNote     String?
+  activityLevel ObservationLevel @default(UNKNOWN)
+  activityNote  String?
+
+  /// 今日完成事项（多选）
+  completedItems String[]
+  /// 补充观察 —— 要求描述客观事实，不做诊断性表述
+  observationText String?
+
+  /// 服务照片（私有存储 key，不建立公开 URL）
+  photoKeys String[]
+
+  submittedAt DateTime  @default(now())
+  /// 审核
+  reviewedById String?
+  reviewedAt   DateTime?
+  reviewNote   String?
+
+  /// 记录一经提交即为原始记录；如需更正，另存修订说明而不覆盖历史语义
+  amendmentNote String?
+
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  task         ServiceTask  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  elder        Elder?       @relation(fields: [elderId], references: [id])
+  staffProfile StaffProfile @relation(fields: [staffProfileId], references: [id])
+  readings     HealthReading[]
+  reportLinks  AssuranceVisitRecordLink[]
+
+  @@index([householdId, submittedAt])
+  @@index([staffProfileId, submittedAt])
+  @@map("visit_records")
+}
+
+/// 健康数值 —— 每条必须记录来源；系统不显示疾病诊断
+model HealthReading {
+  id      String @id @default(cuid())
+  elderId String
+  visitRecordId String?
+
+  type   ReadingType
+  source ReadingSource
+
+  /// 血压用 valuePrimary=收缩压, valueSecondary=舒张压；其余只用 valuePrimary
+  valuePrimary   Float
+  valueSecondary Float?
+  unit           String
+
+  measuredAt DateTime @default(now())
+  note       String?
+
+  /// 是否超出「家庭设定的提醒范围」—— 明确不是医疗诊断
+  outsideFamilyRange Boolean @default(false)
+
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  elder       Elder        @relation(fields: [elderId], references: [id], onDelete: Cascade)
+  visitRecord VisitRecord? @relation(fields: [visitRecordId], references: [id])
+
+  @@index([elderId, measuredAt])
+  @@map("health_readings")
+}
+
+// ============================================================================
+// 异常事件
+// ============================================================================
+
+model Incident {
+  id         String @id @default(cuid())
+  incidentNo String @unique /// 例：INC-20260815-0018
+
+  householdId String
+  elderId     String?
+  taskId      String?
+
+  type     IncidentType
+  severity IncidentSeverity @default(MEDIUM)
+  status   IncidentStatus   @default(NEW)
+
+  description String
+  occurredAt  DateTime @default(now())
+  /// 提交时是否要求立即联络家庭
+  needsImmediateFamilyContact Boolean @default(false)
+  attachmentKeys String[]
+
+  reportedById String?
+  ownerId      String? /// 负责人；为空即 Dashboard 上的「尚未指定」
+  acknowledgedAt DateTime?
+  closedAt       DateTime?
+  resolution     String?
+
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household  Household     @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  elder      Elder?        @relation(fields: [elderId], references: [id])
+  task       ServiceTask?  @relation(fields: [taskId], references: [id])
+  reportedBy User?         @relation("IncidentReporter", fields: [reportedById], references: [id])
+  owner      User?         @relation("IncidentOwner", fields: [ownerId], references: [id])
+  events     IncidentEvent[]
+
+  @@index([status, occurredAt])
+  @@index([householdId])
+  @@map("incidents")
+}
+
+/// 事件时间线 —— 每一步的时间、操作人、动作、备注全部保留
+model IncidentEvent {
+  id         String @id @default(cuid())
+  incidentId String
+
+  actorId   String?
+  actorName String /// 冗余保存，避免人员离职后时间线失去语义
+  action    String /// 例：提交事件 / 通知服务督导 / 联系家庭主要联络人
+  note      String?
+  occurredAt DateTime @default(now())
+
+  createdAt DateTime @default(now())
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  actor    User?    @relation(fields: [actorId], references: [id])
+
+  @@index([incidentId, occurredAt])
+  @@map("incident_events")
+}
+
+// ============================================================================
+// 安心报告 —— 与原始记录严格分离
+// ============================================================================
+
+model AssuranceReport {
+  id        String @id @default(cuid())
+  reportNo  String @unique /// 例：RPT-2026W33-0018
+
+  householdId String
+  elderId     String?
+
+  periodStart DateTime
+  periodEnd   DateTime
+
+  status     ReportStatus     @default(DRAFT)
+  generation ReportGeneration @default(RULE_BASED_DRAFT)
+
+  /// 面向家庭的标题，例：媽媽這週過得怎麼樣？
+  title String
+
+  /// 统计（由原始记录汇总，不可手改成与记录不符的数字）
+  visitCount     Int @default(0)
+  phoneCareCount Int @default(0)
+
+  /// 各段内容。全部必须能在原始记录中找到依据。
+  spiritSummary   String?
+  dietSummary     String?
+  sleepSummary    String?
+  activitySummary String?
+  lifeSummary     String?
+  attentionSummary String? /// 需要留意
+  familyTip       String? /// 给家人的小提醒
+
+  /// AI 相关标记
+  aiGenerated   Boolean @default(false)
+  aiModel       String?
+  /// 人工确认
+  reviewedById String?
+  reviewedAt   DateTime?
+  reviewNote   String?
+  publishedAt  DateTime?
+  rejectReason String?
+
+  /// 家庭端阅读与评价
+  firstReadAt  DateTime?
+  familyRating Int?
+  familyComment String?
+
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household  Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  elder      Elder?    @relation(fields: [elderId], references: [id])
+  reviewedBy User?     @relation("ReportReviewer", fields: [reviewedById], references: [id])
+
+  /// 报告引用了哪些原始记录 —— 提供可追溯性
+  sourceRecords AssuranceVisitRecordLink[]
+
+  @@index([householdId, periodStart])
+  @@index([status])
+  @@map("assurance_reports")
+}
+
+/// 报告 ↔ 原始记录 的引用关系
+model AssuranceVisitRecordLink {
+  id            String @id @default(cuid())
+  reportId      String
+  visitRecordId String?
+  /// 电话关怀等无 VisitRecord 的服务，直接引用 task
+  taskId        String? @unique
+
+  createdAt DateTime @default(now())
+
+  report      AssuranceReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  visitRecord VisitRecord?    @relation(fields: [visitRecordId], references: [id])
+  task        ServiceTask?    @relation(fields: [taskId], references: [id])
+
+  @@unique([reportId, visitRecordId])
+  @@map("assurance_report_sources")
+}
+
+// ============================================================================
+// 家庭时间线 / 家庭端申请 / 反馈 / 通知
+// ============================================================================
+
+/// 家庭时间线。写入时即固定「哪些授权类型可见」，读取时再按 Consent 过滤。
+model TimelineEvent {
+  id          String @id @default(cuid())
+  householdId String
+  elderId     String?
+
+  occurredAt DateTime @default(now())
+  title      String
+  detail     String?
+  /// 关联对象
+  refType String? /// task | visit_record | report | incident | subscription
+  refId   String?
+
+  /// 家庭端需要具备哪种授权才能看到这条时间线
+  requiredPermission PermissionType @default(SERVICE_SCHEDULE)
+  /// 是否仅内部可见
+  internalOnly Boolean @default(false)
+
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+
+  @@index([householdId, occurredAt])
+  @@map("timeline_events")
+}
+
+model ServiceChangeRequest {
+  id          String @id @default(cuid())
+  requestNo   String @unique
+  taskId      String?
+  requestedById String
+
+  type   ChangeRequestType
+  status ChangeRequestStatus @default(SUBMITTED)
+
+  /// 改期希望时间 / 额外服务希望时间
+  preferredAt DateTime?
+  /// 额外服务类型（第一版只保留框架：陪诊协助 / 额外探访 / 生活代办）
+  serviceType ServiceType?
+  reason      String?
+
+  handledNote String?
+  handledAt   DateTime?
+
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  task        ServiceTask? @relation(fields: [taskId], references: [id])
+  requestedBy User         @relation(fields: [requestedById], references: [id])
+
+  @@index([status, createdAt])
+  @@map("service_change_requests")
+}
+
+model FeedbackCase {
+  id     String @id @default(cuid())
+  caseNo String @unique /// 例：CASE-20260815-0003
+
+  householdId   String
+  submittedById String?
+  assigneeId    String?
+
+  category FeedbackCategory
+  status   FeedbackStatus   @default(NEW)
+  /// 是否为投诉（区分一般反馈与投诉，用于投诉率指标）
+  isComplaint Boolean @default(false)
+
+  subject String
+  content String
+  resolution String?
+  resolvedAt DateTime?
+
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  household   Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  submittedBy User?     @relation("FeedbackSubmitter", fields: [submittedById], references: [id])
+  assignee    User?     @relation("FeedbackAssignee", fields: [assigneeId], references: [id])
+
+  @@index([status, createdAt])
+  @@map("feedback_cases")
+}
+
+model Notification {
+  id     String @id @default(cuid())
+  userId String
+
+  level   NotificationLevel   @default(NORMAL)
+  channel NotificationChannel @default(IN_APP)
+
+  title String
+  body  String?
+  /// 点击跳转
+  linkUrl String?
+  refType String?
+  refId   String?
+
+  readAt DateTime?
+  /// 外部渠道投递状态（第一版仅站内，预留字段）
+  dispatchedAt DateTime?
+  dispatchError String?
+
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([level, createdAt])
+  @@map("notifications")
+}
+
+// ============================================================================
+// 审计日志
+// ============================================================================
+
+model AuditLog {
+  id     String @id @default(cuid())
+  userId String?
+
+  /// 冗余保存，人员删除后日志仍可读
+  actorName String?
+  actorRole Role?
+
+  action     String /// 例：LOGIN / VIEW_SENSITIVE / UPDATE_ELDER / REVOKE_CONSENT / EXPORT
+  resource   String /// 例：Elder / Consent / AssuranceReport
+  resourceId String?
+
+  /// 变更前后快照（仅保存必要字段，避免把敏感明文大量落库）
+  before Json?
+  after  Json?
+
+  ipAddress String?
+  userAgent String?
+  /// 授权/权限判定结果，便于事后复查「为什么当时能看到」
+  permissionNote String?
+
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([resource, resourceId])
+  @@index([action, createdAt])
+  @@map("audit_logs")
+}
+
+/// 服务类型与价格配置。
+///
+/// 需求里「系统 → 服务类型 / 价格」指的是这张表：
+/// 服务类型本身是枚举（保证代码里语义稳定），但**对外名称、时长、额外服务单价、
+/// 是否开放给家庭端申请**都必须能在后台改，不能写死在代码里。
+model ServiceCatalogItem {
+  id          String      @id @default(cuid())
+  serviceType ServiceType @unique
+
+  /// 对外显示名称（可与枚举中文名不同，便于运营调整口径）
+  displayName String
+  description String?
+
+  /// 默认预计时长（分钟），排班时作为默认值
+  defaultMinutes Int @default(60)
+
+  /// 作为增值服务单独购买时的价格（分）。为空表示不单独售卖。
+  addOnPrice Int?
+
+  /// 是否允许家庭端在「申请额外服务」里选到它
+  familyRequestable Boolean @default(false)
+
+  /// 派单前是否要求专员具备对应能力（与 Competency.requiredForServices 配合）
+  requiresCompetency Boolean @default(true)
+
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  updatedById String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("service_catalog_items")
+}
+
+/// 通知模板。
+///
+/// 第一版只有站内通知会真正发出；短信 / 微信 / 企业微信的模板可以先配好，
+/// 但 enabledChannels 里勾选了未接入的渠道时，界面会明确标注「渠道尚未接入」，
+/// 不会假装已送达。
+model NotificationTemplate {
+  id    String                    @id @default(cuid())
+  event NotificationTemplateEvent @unique
+
+  name  String
+  level NotificationLevel @default(NORMAL)
+
+  /// 标题与正文模板。占位符形如 {{elderName}} {{serviceTime}} {{specialistName}}
+  titleTemplate String
+  bodyTemplate  String?
+
+  /// 允许使用的占位符清单，供界面提示（避免运营写出系统不认识的变量）
+  availableVars String[]
+
+  /// 已启用的渠道。第一版实际只会走 IN_APP。
+  enabledChannels NotificationChannel[]
+
+  /// 家庭端收到该通知需要具备的授权（为空表示不受授权限制，例如纯服务安排提醒）
+  requiredPermission PermissionType?
+
+  isActive    Boolean  @default(true)
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("notification_templates")
+}
+
+/// 更换固定专员留痕（品牌承诺「固定专员制度」的可审计部分）
+model SpecialistChangeLog {
+  id          String @id @default(cuid())
+  householdId String
+
+  fromStaffProfileId String?
+  toStaffProfileId   String?
+  reason             String
+  changedByName      String
+  /// 是否已通知家庭
+  familyNotifiedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+
+  @@index([householdId, createdAt])
+  @@map("specialist_change_logs")
+}

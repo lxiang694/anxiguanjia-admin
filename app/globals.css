@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-sans: ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei',
+      sans-serif;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-cream-100 text-ink-800 antialiased;
+    font-family: var(--font-sans);
+  }
+
+  /* 后台信息密度适中，家庭端与专员端字号略大 */
+  .portal-family,
+  .portal-staff {
+    @apply text-[15px];
+  }
+
+  *:focus-visible {
+    @apply outline-none ring-2 ring-brand-400 ring-offset-2 ring-offset-cream-100;
+  }
+
+  /* 表单元素统一底色，避免浏览器默认样式让界面显得廉价 */
+  input,
+  textarea,
+  select {
+    @apply bg-white;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-card border border-cream-300 bg-white shadow-card;
+  }
+
+  .card-muted {
+    @apply rounded-card border border-cream-300 bg-cream-50;
+  }
+
+  .label {
+    @apply mb-1.5 block text-[13px] font-medium text-ink-600;
+  }
+
+  .field {
+    @apply w-full rounded-lg border border-cream-400 px-3 py-2 text-sm text-ink-800
+      placeholder:text-ink-300 focus:border-brand-400 focus:outline-none
+      focus:ring-2 focus:ring-brand-100 disabled:bg-cream-100 disabled:text-ink-400;
+  }
+
+  .link {
+    @apply text-brand-600 underline-offset-2 hover:text-brand-700 hover:underline;
+  }
+
+  /* 分区标题 */
+  .section-title {
+    @apply text-[13px] font-semibold uppercase tracking-wide text-ink-400;
+  }
+
+  /* 专员端大按钮：一线在户外单手操作，触控目标必须够大 */
+  .btn-mobile {
+    @apply flex min-h-[52px] w-full items-center justify-center gap-2 rounded-xl
+      text-base font-semibold transition active:scale-[0.99];
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+
+  /* 安全区适配（专员端与家庭端底部导航） */
+  .pb-safe {
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.5rem);
+  }
+}
